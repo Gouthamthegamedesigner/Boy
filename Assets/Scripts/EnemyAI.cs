@@ -15,6 +15,7 @@ public class EnemyAI : MonoBehaviour
     [Header("Chase")]
     public float chaseSpeed = 6f;
     public float stopDelay = 2f; // Time to wait when player stops
+    public float minMovementSpeed = 0.1f; // Minimum speed to consider player moving
 
     [Header("Visuals")]
     public Material chaseMaterial;
@@ -23,10 +24,9 @@ public class EnemyAI : MonoBehaviour
 
     private NavMeshAgent _agent;
     private Transform _player;
+    private CharacterController _playerController; // Reference to player's CharacterController
     private bool _isPlayerMoving;
-    private float _playerMovementThreshold = 0.1f; // Minimum movement to be considered "moving"
     private float _playerStopTimer;
-    private Vector3 _lastPlayerPosition;
     
     // Enemy states
     private enum EnemyState { Patrolling, Chasing, Waiting }
@@ -38,13 +38,18 @@ public class EnemyAI : MonoBehaviour
         _player = GameObject.FindGameObjectWithTag("Player").transform;
         if (_player == null) Debug.LogError("Player not found! Assign 'Player' tag.");
         
+        // Get player's CharacterController
+        _playerController = _player.GetComponent<CharacterController>();
+        if (_playerController == null)
+        {
+            Debug.LogError("Player is missing CharacterController component!");
+        }
+        
         _agent.SetDestination(waypoints[_currentWaypointIndex].position);
         _agent.speed = patrolSpeed;
         
         _enemyRenderer = GetComponent<Renderer>();
         if (_enemyRenderer != null) _originalMaterial = _enemyRenderer.material;
-        
-        _lastPlayerPosition = _player.position;
     }
 
     void Update()
@@ -73,10 +78,19 @@ public class EnemyAI : MonoBehaviour
 
     void UpdatePlayerMovementStatus()
     {
-        // Calculate distance player moved since last frame
-        float distanceMoved = Vector3.Distance(_player.position, _lastPlayerPosition);
-        _isPlayerMoving = distanceMoved > _playerMovementThreshold;
-        _lastPlayerPosition = _player.position;
+        if (_playerController != null)
+        {
+            // Use CharacterController's velocity for precise movement detection
+            _isPlayerMoving = _playerController.velocity.sqrMagnitude > (minMovementSpeed * minMovementSpeed);
+        }
+        else
+        {
+            // Fallback to position comparison if CharacterController is missing
+            Debug.LogWarning("Using fallback movement detection - add CharacterController to player for better accuracy");
+            Vector3 playerPosition = _player.position;
+            float distanceMoved = Vector3.Distance(playerPosition, _playerController.transform.position);
+            _isPlayerMoving = distanceMoved > minMovementSpeed * Time.deltaTime;
+        }
     }
 
     void HandlePatrolState()
