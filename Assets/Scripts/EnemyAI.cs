@@ -8,33 +8,43 @@ public class EnemyAI : MonoBehaviour
     public float patrolSpeed = 3f;
     private int _currentWaypointIndex = 0;
 
-    [Header("Chase")]
-    public float chaseSpeed = 6f;
+    [Header("Detection")]
     public float detectionAngle = 60f;
     public float detectionDistance = 10f;
-    public LayerMask playerLayer;
-    public LayerMask obstructionLayers;
+    public LayerMask blockingLayers; // Assign layers that should block vision
+
+    [Header("Chase")]
+    public float chaseSpeed = 6f;
+
+    [Header("Visuals")]
+    public Material chaseMaterial;
+    private Material _originalMaterial;
+    private Renderer _enemyRenderer;
 
     private NavMeshAgent _agent;
     private Transform _player;
-    private bool _hasSeenPlayer = false; // Renamed to better reflect permanent chase
+    private bool _hasSeenPlayer = false;
 
     void Start()
     {
         _agent = GetComponent<NavMeshAgent>();
         _player = GameObject.FindGameObjectWithTag("Player").transform;
-        if (_player == null) Debug.LogError("Assign 'Player' tag to player object!");
+        if (_player == null) Debug.LogError("Player not found! Assign 'Player' tag.");
+        
         _agent.SetDestination(waypoints[_currentWaypointIndex].position);
+        
+        _enemyRenderer = GetComponent<Renderer>();
+        if (_enemyRenderer != null) _originalMaterial = _enemyRenderer.material;
     }
 
     void Update()
     {
         if (_player == null) return;
 
-        // Only check for player if we haven't seen them yet
         if (!_hasSeenPlayer && CanSeePlayer())
         {
             _hasSeenPlayer = true;
+            ChangeToChaseColor();
         }
 
         if (_hasSeenPlayer)
@@ -52,19 +62,45 @@ public class EnemyAI : MonoBehaviour
     {
         Vector3 directionToPlayer = (_player.position - transform.position).normalized;
         float angleToPlayer = Vector3.Angle(transform.forward, directionToPlayer);
+        float distanceToPlayer = Vector3.Distance(transform.position, _player.position);
 
+        // Visual debug (green = in cone, red = out of cone)
         Debug.DrawRay(transform.position, directionToPlayer * detectionDistance, 
                      angleToPlayer < detectionAngle/2f ? Color.green : Color.red);
 
-        if (angleToPlayer < detectionAngle/2f && 
-            Vector3.Distance(transform.position, _player.position) <= detectionDistance)
+        // Check if player is within vision cone and range
+        if (angleToPlayer < detectionAngle/2f && distanceToPlayer <= detectionDistance)
         {
-            if (!Physics.Linecast(transform.position, _player.position, obstructionLayers))
+            // Calculate the actual distance to player
+            float playerDistance = Vector3.Distance(transform.position, _player.position);
+            
+            // Check for blocking objects
+            RaycastHit hit;
+            if (Physics.Raycast(
+                transform.position,
+                directionToPlayer,
+                out hit,
+                playerDistance, // Use actual distance to player
+                blockingLayers))
             {
-                return true;
+                // If we hit something in the blocking layers, vision is blocked
+                Debug.DrawLine(transform.position, hit.point, Color.blue, 0.1f);
+                return false;
             }
+            
+            // Nothing blocking - can see player
+            Debug.DrawLine(transform.position, _player.position, Color.yellow, 0.1f);
+            return true;
         }
         return false;
+    }
+
+    void ChangeToChaseColor()
+    {
+        if (_enemyRenderer != null && chaseMaterial != null)
+        {
+            _enemyRenderer.material = chaseMaterial;
+        }
     }
 
     void CycleWaypoint()
@@ -72,8 +108,6 @@ public class EnemyAI : MonoBehaviour
         _currentWaypointIndex = (_currentWaypointIndex + 1) % waypoints.Length;
         _agent.SetDestination(waypoints[_currentWaypointIndex].position);
     }
-
-    // Removed ResumePatrol() since we won't return to patrol
 
     void OnDrawGizmosSelected()
     {
