@@ -11,10 +11,10 @@ public class EnemyAI : MonoBehaviour
     [Header("Detection")]
     public float detectionAngle = 60f;
     public float detectionDistance = 10f;
-    public LayerMask blockingLayers; // Assign layers that should block vision
 
     [Header("Chase")]
     public float chaseSpeed = 6f;
+    public float stopDelay = 2f; // Time to wait when player stops
 
     [Header("Visuals")]
     public Material chaseMaterial;
@@ -23,7 +23,14 @@ public class EnemyAI : MonoBehaviour
 
     private NavMeshAgent _agent;
     private Transform _player;
-    private bool _hasSeenPlayer = false;
+    private bool _isPlayerMoving;
+    private float _playerMovementThreshold = 0.1f; // Minimum movement to be considered "moving"
+    private float _playerStopTimer;
+    private Vector3 _lastPlayerPosition;
+    
+    // Enemy states
+    private enum EnemyState { Patrolling, Chasing, Waiting }
+    private EnemyState _currentState = EnemyState.Patrolling;
 
     void Start()
     {
@@ -32,29 +39,113 @@ public class EnemyAI : MonoBehaviour
         if (_player == null) Debug.LogError("Player not found! Assign 'Player' tag.");
         
         _agent.SetDestination(waypoints[_currentWaypointIndex].position);
+        _agent.speed = patrolSpeed;
         
         _enemyRenderer = GetComponent<Renderer>();
         if (_enemyRenderer != null) _originalMaterial = _enemyRenderer.material;
+        
+        _lastPlayerPosition = _player.position;
     }
 
     void Update()
     {
         if (_player == null) return;
 
-        if (!_hasSeenPlayer && CanSeePlayer())
-        {
-            _hasSeenPlayer = true;
-            ChangeToChaseColor();
-        }
+        // Track player movement
+        UpdatePlayerMovementStatus();
 
-        if (_hasSeenPlayer)
+        // State machine
+        switch (_currentState)
         {
-            _agent.speed = chaseSpeed;
-            _agent.SetDestination(_player.position);
+            case EnemyState.Patrolling:
+                HandlePatrolState();
+                break;
+                
+            case EnemyState.Chasing:
+                HandleChaseState();
+                break;
+                
+            case EnemyState.Waiting:
+                HandleWaitingState();
+                break;
         }
-        else if (_agent.remainingDistance < 0.5f)
+    }
+
+    void UpdatePlayerMovementStatus()
+    {
+        // Calculate distance player moved since last frame
+        float distanceMoved = Vector3.Distance(_player.position, _lastPlayerPosition);
+        _isPlayerMoving = distanceMoved > _playerMovementThreshold;
+        _lastPlayerPosition = _player.position;
+    }
+
+    void HandlePatrolState()
+    {
+        // Check if player is visible and moving
+        if (CanSeePlayer() && _isPlayerMoving)
+        {
+            // Start chasing
+            _currentState = EnemyState.Chasing;
+            ChangeToChaseColor();
+            _agent.speed = chaseSpeed;
+        }
+        
+        // Move to next waypoint if reached current
+        if (_agent.remainingDistance < 0.5f)
         {
             CycleWaypoint();
+        }
+    }
+
+    void HandleChaseState()
+    {
+        // Continue chasing while player is moving
+        if (_isPlayerMoving)
+        {
+            _agent.SetDestination(_player.position);
+        }
+        else
+        {
+            // Player stopped - begin waiting period
+            _currentState = EnemyState.Waiting;
+            _agent.isStopped = true; // Stop moving
+            _playerStopTimer = stopDelay;
+        }
+    }
+
+    void HandleWaitingState()
+    {
+        // Look at player while waiting
+        Vector3 lookDirection = _player.position - transform.position;
+        lookDirection.y = 0; // Keep upright
+        if (lookDirection != Vector3.zero)
+        {
+            transform.rotation = Quaternion.Slerp(
+                transform.rotation,
+                Quaternion.LookRotation(lookDirection),
+                Time.deltaTime * 5f
+            );
+        }
+        
+        // Count down timer
+        _playerStopTimer -= Time.deltaTime;
+        
+        // Check if player started moving again
+        if (_isPlayerMoving)
+        {
+            // Resume chasing
+            _currentState = EnemyState.Chasing;
+            _agent.isStopped = false;
+        }
+        // If timer expires and player still not moving
+        else if (_playerStopTimer <= 0)
+        {
+            // Return to patrol
+            _currentState = EnemyState.Patrolling;
+            _agent.isStopped = false;
+            ChangeToOriginalColor();
+            _agent.speed = patrolSpeed;
+            ResumePatrol();
         }
     }
 
@@ -68,31 +159,7 @@ public class EnemyAI : MonoBehaviour
         Debug.DrawRay(transform.position, directionToPlayer * detectionDistance, 
                      angleToPlayer < detectionAngle/2f ? Color.green : Color.red);
 
-        // Check if player is within vision cone and range
-        if (angleToPlayer < detectionAngle/2f && distanceToPlayer <= detectionDistance)
-        {
-            // Calculate the actual distance to player
-            float playerDistance = Vector3.Distance(transform.position, _player.position);
-            
-            // Check for blocking objects
-            RaycastHit hit;
-            if (Physics.Raycast(
-                transform.position,
-                directionToPlayer,
-                out hit,
-                playerDistance, // Use actual distance to player
-                blockingLayers))
-            {
-                // If we hit something in the blocking layers, vision is blocked
-                Debug.DrawLine(transform.position, hit.point, Color.blue, 0.1f);
-                return false;
-            }
-            
-            // Nothing blocking - can see player
-            Debug.DrawLine(transform.position, _player.position, Color.yellow, 0.1f);
-            return true;
-        }
-        return false;
+        return angleToPlayer < detectionAngle/2f && distanceToPlayer <= detectionDistance;
     }
 
     void ChangeToChaseColor()
@@ -102,10 +169,38 @@ public class EnemyAI : MonoBehaviour
             _enemyRenderer.material = chaseMaterial;
         }
     }
+    
+    void ChangeToOriginalColor()
+    {
+        if (_enemyRenderer != null && _originalMaterial != null)
+        {
+            _enemyRenderer.material = _originalMaterial;
+        }
+    }
 
     void CycleWaypoint()
     {
         _currentWaypointIndex = (_currentWaypointIndex + 1) % waypoints.Length;
+        _agent.SetDestination(waypoints[_currentWaypointIndex].position);
+    }
+    
+    void ResumePatrol()
+    {
+        // Find closest waypoint to resume patrol
+        float minDistance = float.MaxValue;
+        int closestIndex = 0;
+        
+        for (int i = 0; i < waypoints.Length; i++)
+        {
+            float distance = Vector3.Distance(transform.position, waypoints[i].position);
+            if (distance < minDistance)
+            {
+                minDistance = distance;
+                closestIndex = i;
+            }
+        }
+        
+        _currentWaypointIndex = closestIndex;
         _agent.SetDestination(waypoints[_currentWaypointIndex].position);
     }
 
